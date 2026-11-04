@@ -1,0 +1,9 @@
+.next
+node_modules
+package-lock.json
+public/pdf.worker.min.mjs
+coverage
+playwright-report
+test-results
+data
+docs/screenshots
