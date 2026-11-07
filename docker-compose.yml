@@ -1,0 +1,141 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../docker/backend.Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}}
+      REDIS_URL: ${REDIS_URL}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION}
+      CHUNK_SIZE: ${CHUNK_SIZE}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP}
+      DENSE_TOP_K: ${DENSE_TOP_K:-20}
+      SPARSE_TOP_K: ${SPARSE_TOP_K:-20}
+      FINAL_TOP_K: ${FINAL_TOP_K:-8}
+      CANDIDATE_POOL: ${CANDIDATE_POOL:-30}
+      NEIGHBOR_WINDOW: ${NEIGHBOR_WINDOW:-1}
+      RRF_K: ${RRF_K:-60}
+      RETRIEVAL_THRESHOLD: ${RETRIEVAL_THRESHOLD:-0.18}
+      DENSE_MIN_SCORE: ${DENSE_MIN_SCORE:-0.22}
+      DUAL_QUERY_RETRIEVE: ${DUAL_QUERY_RETRIEVE:-true}
+      REWRITE_ENABLED: ${REWRITE_ENABLED:-true}
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      LLM_MODEL: ${LLM_MODEL}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_API_BASE: ${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE:-}
+      UPLOAD_DIR: ${UPLOAD_DIR}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-20}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW}
+      HF_HOME: /root/.cache/huggingface
+      TRANSFORMERS_CACHE: /root/.cache/huggingface
+      SENTENCE_TRANSFORMERS_HOME: /root/.cache/torch
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/uploads
+      - model_cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: ../docker/worker.Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}}
+      REDIS_URL: ${REDIS_URL}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION}
+      CHUNK_SIZE: ${CHUNK_SIZE}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP}
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      LLM_MODEL: ${LLM_MODEL}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_API_BASE: ${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+      UPLOAD_DIR: ${UPLOAD_DIR}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-20}
+      HF_HOME: /root/.cache/huggingface
+      TRANSFORMERS_CACHE: /root/.cache/huggingface
+      SENTENCE_TRANSFORMERS_HOME: /root/.cache/torch
+    volumes:
+      - uploads:/app/uploads
+      - model_cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/frontend.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+      NODE_ENV: production
+    depends_on:
+      - backend
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  pgdata:
+  uploads:
+  model_cache:
+  ollama_data:
